@@ -1,0 +1,36 @@
+name: AI Server CI
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [dev, main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 코드 체크아웃
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Python 환경 설정 (캐싱 포함)
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip' # requirements.txt 기반 pip 캐싱
+
+       # 3. 의존성 설치
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+       # Phase 1: Lint (Flake8)
+      - name: Run Flake8
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        continue-on-error: true
+
+      # Phase 2: Test (TODO: 테스트 전략 협의 후 활성화)
+      # - name: Run unit tests
+      #   run: pytest tests/ -v

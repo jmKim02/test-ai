@@ -1,4 +1,4 @@
-name: AI Server CI
+name: AI Server CI 2
 
 on:
   pull_request:

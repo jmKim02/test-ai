@@ -1,12 +1,13 @@
-name: AI Server CI 2
+name: AI Server CI
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, closed]
     branches: [dev, main]
 
 jobs:
   ci:
+    if: github.event.action == 'opened' || github.event.action == 'synchronize'
     runs-on: ubuntu-latest
     steps:
       # 1. 코드 체크아웃
@@ -14,10 +15,10 @@ jobs:
         uses: actions/checkout@v4
 
       # 2. Python 환경 설정 (캐싱 포함)
-      - name: Setup Python 3.11
+      - name: Setup Python 3.13
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
           cache: 'pip' # requirements.txt 기반 pip 캐싱
 
        # 3. 의존성 설치
@@ -34,3 +35,210 @@ jobs:
       # Phase 2: Test (TODO: 테스트 전략 협의 후 활성화)
       # - name: Run unit tests
       #   run: pytest tests/ -v
+
+      # Phase 3: Artifact Upload (소스코드 전체)
+      - name: Upload Source Code artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-${{ github.sha }}
+          path: |
+            **/*.py
+            requirements.txt
+            !.git/**
+            !.github/**
+            !__pycache__/**
+            !*.pyc
+          retention-days: 14
+          compression-level: 6  # 소스코드는 압축 효과 있음
+
+  cd:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 코드 체크아웃 (태깅용)
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Artifact Download (CI에서 생성한 소스코드)
+      - name: Download Source Code artifact
+        uses: dawidd6/action-download-artifact@v6
+        # 다른 워크플로우 실행의 Artifact도 다운로드 가능한 커스텀 액션
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: ai-ci.yml
+          pr: ${{ github.event.pull_request.number }}
+          workflow_conclusion: success
+          name_is_regexp: true
+          name: "ai-.*"
+          path: ./artifacts
+
+      # 3. 타임스탬프로 배포 디렉토리 준비
+      - name: Prepare Deployment Package
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          cd artifacts
+          cd $(ls -d ai-* | head -n 1)
+          cd ../..
+          mv artifacts/$(ls -d artifacts/ai-* | head -n 1) ai-${TIMESTAMP}
+          echo "DEPLOY_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
+
+      # 4. release/ 디렉토리로 소스코드 전송
+      - name: Transfer Source Code to Server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          source: "ai-${{ env.DEPLOY_TIMESTAMP }}/*"
+          target: "~/ai/release/"
+          strip_components: 1  # ai-timestamp/ 디렉토리 제거
+
+      # 5. 배포 실행 (심볼릭 링크 방식)
+      - name: Deploy via SSH
+        id: deploy
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            AI_DIR="/home/jmkim990226/ai"
+            RELEASE_DIR="$AI_DIR/release"
+            NEW_RELEASE="$RELEASE_DIR/ai-${{ env.DEPLOY_TIMESTAMP }}"
+            CURRENT_LINK="$AI_DIR/current"
+            
+            echo "1. 서비스 중지"
+            sudo systemctl stop ai || true
+            사
+            echo "2. 의존성 설치 (venv 용)"
+            cd $NEW_RELEASE
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+            deactivate
+            
+            echo "3. 새 릴리즈로 심볼릭 링크 생성"
+            ln -sf $NEW_RELEASE $CURRENT_LINK
+            ls -lh $CURRENT_LINK
+            
+            echo "4. 서비스 시작"
+            sudo systemctl start ai
+            
+            echo "5. 서비스 상태 확인"
+            sudo systemctl status ai --no-pager
+            
+            echo "6. 프로세스 시작 대기"
+            sleep 10
+      
+      # 6. Health Check
+      - name: Health Check
+        id: healthcheck
+        uses: appleboy/ssh-action@v1.0.0
+        continue-on-error: true
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            echo "Health Check"
+            MAX_RETRY=10
+            RETRY_COUNT=0
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRY ]; do
+              if curl -f -s http://localhost:8000/health > /dev/null; then
+                echo "Health check passed!"
+                exit 0
+              fi
+              
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              echo "Retry $RETRY_COUNT/$MAX_RETRY..."
+              sleep 5
+            done
+
+            # fail 시 롤백 + 디스코드 알림 추가 예정
+            
+            echo "Health check failed!"
+            tail -30 /home/jmkim990226/ai/ai.log
+            exit 1
+
+      # 7. 시맨틱 버전 태그 생성
+      - name: Create Semantic Version Tag
+        if: steps.healthcheck.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 최신 태그 가져오기 (없으면 v0.0.0)
+          # git describe --tags: 가장 가까운 태그 찾기
+          # --abbrev=0: 커밋 해시 표시 안 함 (태그만)
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match "v*.*.*" 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # 버전 파싱
+          VERSION=${LATEST_TAG#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          
+          # Patch 버전 자동 증가 (0.0.0 → 0.0.1)
+          # 단 패치버전에 대해서만 가능, 메이저의 경우 수동으로 업데이트가 필요
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          
+          echo "New version: $NEW_VERSION"
+          
+          # Git 설정 (커밋 작성자 정보)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 태그 생성 및 푸시
+          git tag -a $NEW_VERSION -m "Release $NEW_VERSION
+          
+          Deploy Timestamp: ${{ env.DEPLOY_TIMESTAMP }}
+          Commit: ${{ github.sha }}
+          PR: #${{ github.event.pull_request.number }}
+          Merged by: ${{ github.event.pull_request.user.login }}"
+          
+          git push origin $NEW_VERSION
+          echo "DEPLOY_TAG=$NEW_VERSION" >> $GITHUB_ENV
+          echo "Tag created: $NEW_VERSION"
+    
+      # 8. 오래된 release/ 정리
+      - name: Cleanup Old Releases
+        if: steps.healthcheck.outcome == 'success'
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            RELEASE_DIR="/home/jmkim990226/ai/release"
+            
+            echo "Cleanup old releases"
+            
+            cd $RELEASE_DIR
+            OLD_RELEASES=$(ls -t -d ai-* | tail -n +6)
+            
+            if [ -n "$OLD_RELEASES" ]; then
+              echo "Removing old releases:"
+              echo "$OLD_RELEASES" | xargs -r rm -rfv
+            else
+              echo "No old releases to clean up"
+            fi
+      
+      # 9. Discord 알림 추가 예정 (성공/실패 모두 알림 + 커밋) - 아직 테스트 전
+      # - name: Notify Discord
+      #  if: always()
+      #  env:
+      #    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      #    STATUS: ${{ steps.healthcheck.outcome }} # success | failure | cancelled | skipped
+      #  run: |
+      #    curl -s -X POST -H "Content-Type: application/json" \
+      #      -d "{\"content\":\"Backend deploy ${STATUS} | commit: ${{ github.sha }}\"}" \
+      #      "$DISCORD_WEBHOOK_URL"

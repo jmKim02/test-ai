@@ -78,6 +78,11 @@ jobs:
       - name: Prepare Deployment Package
         run: |
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          echo "=== Current directory structure ==="
+          ls -la
+          echo "=== Artifacts directory structure ==="
+          ls -la artifacts/
+          
           cd artifacts
           cd $(ls -d ai-* | head -n 1)
           cd ../..
@@ -112,7 +117,7 @@ jobs:
             CURRENT_LINK="$AI_DIR/current"
             
             echo "1. 서비스 중지"
-            sudo systemctl stop ai || true
+            sudo systemctl stop ai-server || true
             사
             echo "2. 의존성 설치 (venv 용)"
             cd $NEW_RELEASE
@@ -127,10 +132,10 @@ jobs:
             ls -lh $CURRENT_LINK
             
             echo "4. 서비스 시작"
-            sudo systemctl start ai
+            sudo systemctl start ai-server
             
             echo "5. 서비스 상태 확인"
-            sudo systemctl status ai --no-pager
+            sudo systemctl status ai-server --no-pager
             
             echo "6. 프로세스 시작 대기"
             sleep 10

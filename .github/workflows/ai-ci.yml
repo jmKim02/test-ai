@@ -78,6 +78,10 @@ jobs:
       - name: Prepare Deployment Package
         run: |
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
+
+          echo "=== Artifact 크기 확인 ==="
+          du -sh artifacts/
+
           cd artifacts
           ARTIFACT_DIR=$(ls -d ai-* | head -n 1)
           cd ..

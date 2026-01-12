@@ -79,8 +79,8 @@ jobs:
         run: |
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
           cd artifacts
-          cd $(ls -d ai-* | head -n 1)
-          cd ../..
+          ARTIFACT_DIR=$(ls -d ai-* | head -n 1)
+          cd ..
           mv artifacts/$ARTIFACT_DIR ai-${TIMESTAMP}
           echo "DEPLOY_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
@@ -94,7 +94,7 @@ jobs:
           port: 22
           source: "ai-${{ env.DEPLOY_TIMESTAMP }}/*"
           target: "~/ai/release/"
-          strip_components: 1  # ai-timestamp/ 디렉토리 제거
+          strip_components: 0  
 
       # 5. 배포 실행 (심볼릭 링크 방식)
       - name: Deploy via SSH
@@ -113,7 +113,7 @@ jobs:
             
             echo "1. 서비스 중지"
             sudo systemctl stop ai-server || true
-            사
+            
             echo "2. 의존성 설치 (venv 용)"
             cd $NEW_RELEASE
             python3 -m venv venv

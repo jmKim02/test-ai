@@ -78,15 +78,10 @@ jobs:
       - name: Prepare Deployment Package
         run: |
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
-          echo "=== Current directory structure ==="
-          ls -la
-          echo "=== Artifacts directory structure ==="
-          ls -la artifacts/
-          
           cd artifacts
           cd $(ls -d ai-* | head -n 1)
           cd ../..
-          mv artifacts/$(ls -d artifacts/ai-* | head -n 1) ai-${TIMESTAMP}
+          mv artifacts/$ARTIFACT_DIR ai-${TIMESTAMP}
           echo "DEPLOY_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
       # 4. release/ 디렉토리로 소스코드 전송
